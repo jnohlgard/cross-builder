@@ -24,7 +24,10 @@ RUN dnf -y install --allowerasing \
     m4 \
     texinfo help2man \
     python3 python3-setuptools python3-wheel python3-pip \
-    ncurses-devel
+    openssl \
+    ncurses-devel \
+    patchelf \
+    xar uuid
 
 RUN dnf -y install \
   gcc-c++-aarch64-linux-gnu \
@@ -42,7 +45,10 @@ RUN dnf -y install \
     bzip2-devel \
     openssl-devel \
     xz-devel \
-    libxml2-devel
+    libxml2-devel \
+    llvm-devel \
+    uuid-devel \
+    xar-devel
 
 # Follow the instructions at
 # https://github.com/tpoechtrager/osxcross/blob/master/README.md#packaging-the-sdk
@@ -59,6 +65,11 @@ ENV OSX_VERSION_MIN=${macos_version_min}
 RUN git clone https://github.com/tpoechtrager/osxcross.git /work/osxcross
 COPY MacOSX${SDK_VERSION}.sdk.tar.xz /work/osxcross/tarballs/
 RUN cd /work/osxcross && mkdir /work/prefix/ && UNATTENDED=1 TARGET_DIR=/work/prefix/osxcross-${SDK_VERSION} ./build.sh
+RUN printf 'Patching RUNPATH in installed tools to make the toolchain relocatable\n'; \
+    for f in $(find /work/prefix/osxcross-${SDK_VERSION}/bin/ -type f); do \
+      test -n "$(readelf -d "$f" 2>/dev/null | grep RUNPATH || true)" && \
+        patchelf --set-rpath '$ORIGIN/../lib' "$f" || true; \
+    done
 
 FROM base AS final
 
