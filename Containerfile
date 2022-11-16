@@ -1,11 +1,8 @@
-FROM quay.io/centos/centos:stream9 AS base
+FROM registry.fedoraproject.org/fedora:latest AS base
 
 # Don't install documentation
 RUN printf 'tsflags=nodocs\n' >> /etc/dnf/dnf.conf
 
-RUN dnf -y install dnf-plugins-core
-RUN dnf -y config-manager --set-enabled crb
-RUN dnf -y install epel-release epel-next-release
 RUN dnf -y install --allowerasing \
     bash \
     findutils diffutils util-linux \
@@ -58,7 +55,7 @@ ARG macos_version_min=11.0
 ENV SDK_VERSION=${macos_sdk_version}
 ENV OSX_VERSION_MIN=${macos_version_min}
 RUN mkdir -p /work/prefix/
-RUN git clone --depth 1 https://github.com/tpoechtrager/osxcross.git /work/osxcross
+RUN git clone https://github.com/tpoechtrager/osxcross.git /work/osxcross
 COPY MacOSX${SDK_VERSION}.sdk.tar.xz /work/osxcross/tarballs/
 RUN cd /work/osxcross && UNATTENDED=1 TARGET_DIR=/work/prefix/osxcross-${SDK_VERSION} ./build.sh
 RUN printf 'Patching RUNPATH in installed tools to make the toolchain relocatable\n'; \
@@ -67,53 +64,40 @@ RUN printf 'Patching RUNPATH in installed tools to make the toolchain relocatabl
         patchelf --set-rpath '$ORIGIN/../lib' "$f" || true; \
     done
 
+FROM base AS crosstool-build
+
+COPY ./crosstool-configs /work/crosstool-configs
+RUN useradd -s /bin/bash -U -d /work cross
+RUN mkdir -p /work/prefix /work/src
+RUN chown cross:cross -R /work
+WORKDIR /work
+USER cross:cross
+
+RUN git clone https://github.com/crosstool-ng/crosstool-ng.git /work/crosstool-ng
+RUN cd /work/crosstool-ng && ./bootstrap && ./configure --enable-local && make -j9
+ENV PATH=$PATH:/work/crosstool-ng
+ENV CT_PREFIX=/work/prefix
+RUN set -eux; for config in /work/crosstool-configs/*; do \
+      mkdir -p "/work/build-${config##*/}" && \
+      cd "/work/build-${config##*/}" && \
+      cp "${config}" defconfig && \
+      printf '%s\n' 'CT_TARBALLS_BUILDROOT_LAYOUT=y' >> defconfig && \
+      ct-ng defconfig && \
+      ct-ng build; \
+    done
+
 FROM base AS final
 
 RUN mkdir -p /work
 RUN useradd -s /bin/bash -U -d /work cross
 RUN chown -R cross:cross /work
 
-COPY --from=osxcross-build /work/prefix/osxcross* /opt/osxcross/
-ENV PATH="${PATH}:/opt/osxcross/bin"
+COPY --from=osxcross-build /work/prefix/osxcross-* /opt/osxcross
+COPY --from=crosstool-build /work/prefix/ /opt/
+ENV PATH="${PATH}:/opt/aarch64-unknown-linux-gnu/bin:/opt/riscv64-unknown-linux-gnu/bin:/opt/x86_64-pc-linux-gnu/bin:/opt/osxcross/bin"
 
 RUN printf 'Installing mingw64 cross toolchain\n' && \
   dnf -y install mingw64-gcc-c++
-
-ARG dnf_cross_args="--repo baseos --repo appstream --nodocs --releasever=/"
-
-RUN printf 'Installing aarch64-linux-gnu cross toolchain\n' && \
-  dnf -y install gcc-c++-aarch64-linux-gnu && \
-  dnf -y install \
-    --forcearch=aarch64 --installroot=/usr/aarch64-linux-gnu/sys-root \
-    ${dnf_cross_args} \
-    glibc-devel
-
-RUN printf 'Installing ppc64le-linux-gnu cross toolchain\n' && \
-  dnf -y install gcc-c++-ppc64le-linux-gnu && \
-  dnf -y install \
-    --forcearch=ppc64le --installroot=/usr/powerpc64le-linux-gnu/sys-root \
-    ${dnf_cross_args} \
-    glibc-devel
-
-RUN printf 'Installing x86_64-linux-gnu cross toolchain\n' && \
-  dnf -y install gcc-c++-x86_64-linux-gnu && \
-  dnf -y install \
-    --forcearch=x86_64 --installroot=/usr/x86_64-linux-gnu/sys-root \
-    ${dnf_cross_args} \
-    glibc-devel libstdc++-devel glibc-static libstdc++-static
-
-RUN printf 'Installing arm-linux-gnu cross toolchain\n' && \
-  dnf -y install gcc-c++-arm-linux-gnu && \
-  update-crypto-policies --set DEFAULT:SHA1 && \
-  dnf -y install \
-    --forcearch=armv7hl --installroot=/usr/arm-linux-gnu/sys-root \
-    --releasever=7 --repofrompath 'base,http://mirror.centos.org/altarch/$releasever/os/$basearch/' \
-    --repo base \
-    --setopt=base.gpgkey="https://centos.org/keys/RPM-GPG-KEY-CentOS-7 https://centos.org/keys/RPM-GPG-KEY-CentOS-SIG-AltArch-Arm32" \
-    glibc-devel
-
-RUN printf 'Installing riscv64-linux-gnu cross toolchain (missing sysroot)\n' && \
-  dnf -y install gcc-c++-riscv64-linux-gnu
 
 WORKDIR /work
 USER cross:cross
