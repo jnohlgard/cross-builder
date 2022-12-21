@@ -81,7 +81,11 @@ RUN set -eux; for config in /work/crosstool-configs/*; do \
       mkdir -p "/work/build-${config##*/}" && \
       cd "/work/build-${config##*/}" && \
       cp "${config}" defconfig && \
-      printf '%s\n' 'CT_TARBALLS_BUILDROOT_LAYOUT=y' >> defconfig && \
+      printf '%s\n' \
+        'CT_USE_MIRROR=y' \
+        'CT_MIRROR_BASE_URL="https://cache.nohlgard.se/crosstool-ng/"' \
+        'CT_CC_GCC_BUILD_ID=y' \
+        >> defconfig && \
       ct-ng defconfig && \
       ct-ng build; \
     done
